@@ -5,7 +5,7 @@ export const profile = {
   phone: "+40 751 816 393",
   phoneHref: "tel:+40751816393",
   github: "https://github.com/anro772",
-  linkedin: "https://www.linkedin.com/search/results/all/?keywords=Andrei%20Stefan%20IBM",
+  linkedin: "https://www.linkedin.com/in/andrei-stefan-35675b232/",
   location: "Bucharest, Romania",
   summary:
     "Application developer with over two and a half years at IBM on myUCB, a GxP-regulated patient management system for the pharmaceutical client UCB. I grew from junior developer to the only .NET developer on the application, owning production diagnostics, bug fixing, releases and Installation Qualification documentation. Reliable, on-schedule delivery in a regulated environment.",
