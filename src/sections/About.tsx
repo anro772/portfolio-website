@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { gsap, prefersReducedMotion } from "../lib/motion";
 import { profile } from "../data/cv";
+import { registerStreamPart } from "../lib/stream";
 
 export function About() {
   const root = useRef<HTMLElement>(null);
@@ -25,9 +26,11 @@ export function About() {
       const ap = new AsciiPortrait(portrait.current, "/me.jpeg", prefersReducedMotion());
       ap.onToggle = setTrueColor;
       p = inst.current = ap;
+      registerStreamPart("portrait", ap);
     });
     return () => {
       cancelled = true;
+      registerStreamPart("portrait", null);
       p?.dispose();
       inst.current = null;
     };

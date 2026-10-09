@@ -4,6 +4,7 @@ import { Preloader } from "./components/Preloader";
 import { Nav } from "./components/Nav";
 import { Cursor } from "./components/Cursor";
 import { Grain } from "./components/Grain";
+import { GlyphStreamLayer } from "./components/GlyphStreamLayer";
 import { Hero } from "./sections/Hero";
 import { About } from "./sections/About";
 import { ZeroRollbacks } from "./sections/ZeroRollbacks";
@@ -31,6 +32,7 @@ export function App() {
       <Preloader onDone={onDone} />
       <Cursor />
       <Grain />
+      <GlyphStreamLayer />
       <Nav />
       <main>
         <Hero ready={ready} />

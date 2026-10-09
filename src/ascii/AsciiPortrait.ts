@@ -31,7 +31,9 @@ export class AsciiPortrait {
   private ch = 11;
   private dpr = Math.min(window.devicePixelRatio, 2);
   private raf = 0;
-  private startedAt = -1;
+  private startedAt = 0;
+  // explicit flag: "already finished" start times are negative early in a page load
+  private started = false;
   private sweepFrom = 1;
   private sweepTo = 1;
   private sweepAt = -1e9;
@@ -44,6 +46,9 @@ export class AsciiPortrait {
   private io: IntersectionObserver;
   private ro: ResizeObserver;
   onToggle?: (trueColor: boolean) => void;
+  /** Fires after every re-layout (resize), so the glyph stream can re-aim at the new cells. */
+  onLayout?: () => void;
+  private streamMode = false;
 
   static TYPE_MS = 1500;
   static COLOR_DELAY = 550;
@@ -59,7 +64,9 @@ export class AsciiPortrait {
     this.img.onload = () => {
       this.ready = true;
       this.layout();
+      if (this.streamMode) this.setStreamMode(true);
       this.maybeStart();
+      this.onLayout?.();
     };
     this.img.src = src;
 
@@ -67,6 +74,7 @@ export class AsciiPortrait {
       if (!this.ready) return;
       this.layout();
       this.draw(performance.now());
+      this.onLayout?.();
     });
     this.ro.observe(host);
 
@@ -84,9 +92,69 @@ export class AsciiPortrait {
   }
 
   private maybeStart() {
-    if (!this.ready || !this.visible || this.startedAt >= 0) return;
-    this.startedAt = this.instant ? performance.now() - 1e5 : performance.now();
+    if (!this.ready || !this.visible || this.started) return;
+    this.started = true;
+    this.startedAt = this.instant || this.streamMode ? performance.now() - 1e5 : performance.now();
     this.kick();
+  }
+
+  get isReady() {
+    return this.ready && this.cols > 0;
+  }
+
+  /**
+   * Stream mode: the glyph stream assembles the portrait, so skip the type-in and start invisible;
+   * visibility then follows the stream. Turning it off restores the normal intro.
+   */
+  setStreamMode(on: boolean) {
+    this.streamMode = on;
+    if (on) {
+      if (!this.started && this.ready) {
+        this.started = true;
+        this.startedAt = performance.now() - 1e5;
+        this.kick();
+      }
+      this.canvas.style.opacity = "0";
+    } else {
+      this.canvas.style.opacity = "";
+      this.maybeStart();
+    }
+  }
+
+  /** 0..1 opacity of the real canvas while the stream lands. */
+  setVisibility(t: number) {
+    if (!this.streamMode) return;
+    this.canvas.style.opacity = String(Math.min(1, Math.max(0, t)));
+  }
+
+  /**
+   * Every visible glyph at rest, in page CSS px (top-left of its cell), with the colour it is drawn in
+   * right now (duotone or true colour).
+   */
+  getCells() {
+    const rect = this.canvas.getBoundingClientRect();
+    const ox = rect.left + window.scrollX + PAD;
+    const oy = rect.top + window.scrollY + PAD;
+    const out: { ch: string; x: number; y: number; r: number; g: number; b: number }[] = [];
+    const truth = this.trueColor ? 1 : 0;
+    for (let i = 0; i < this.cells.length; i++) {
+      const c = this.cells[i];
+      if (c.ch === " ") continue;
+      const x = i % this.cols;
+      const y = (i / this.cols) | 0;
+      const fog = c.z < 0 ? 0.55 : 0.8 + c.z * 0.2;
+      const duo = (k: number) => DUO_LO[k] + (DUO_HI[k] - DUO_LO[k]) * c.v;
+      const tc = [c.r, c.g, c.b].map((v) => Math.min(255, v * 1.12));
+      out.push({
+        ch: c.ch,
+        x: ox + x * this.cw,
+        y: oy + y * this.ch,
+        r: ((duo(0) + (tc[0] - duo(0)) * truth) * fog) / 255,
+        g: ((duo(1) + (tc[1] - duo(1)) * truth) * fog) / 255,
+        b: ((duo(2) + (tc[2] - duo(2)) * truth) * fog) / 255,
+      });
+    }
+    return { cells: out, cellW: this.cw, cellH: this.ch };
   }
 
   private layout() {
@@ -186,7 +254,7 @@ export class AsciiPortrait {
   toggle = () => this.setTrueColor(!this.trueColor);
 
   setTrueColor(on: boolean) {
-    if (this.startedAt < 0 || on === this.trueColor) return;
+    if (!this.started || on === this.trueColor) return;
     const now = performance.now();
     const current = this.sweepProgress(now);
     this.sweepFrom = current;
@@ -222,7 +290,7 @@ export class AsciiPortrait {
   /** Returns true while anything is still animating. */
   private draw(now: number) {
     const { ctx, cols, rows, cw, ch, dpr } = this;
-    if (!cols || this.startedAt < 0) return false;
+    if (!cols || !this.started) return false;
     const elapsed = now - this.startedAt;
     const total = cols * rows;
     const typed = Math.min(total, Math.floor((elapsed / AsciiPortrait.TYPE_MS) * total));

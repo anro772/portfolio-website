@@ -3,6 +3,7 @@ import { ArrowDownRight } from "@phosphor-icons/react";
 import { gsap, prefersReducedMotion, scrollToTarget } from "../lib/motion";
 import { SplitText } from "../components/SplitText";
 import { MagneticButton } from "../components/MagneticButton";
+import { registerStreamPart } from "../lib/stream";
 
 const SHAPE_LABELS = ["Controller", "Code", "D20", "WASD", "CPU"];
 
@@ -25,10 +26,12 @@ export function Hero({ ready }: { ready: boolean }) {
       const obj = new AsciiMorph(stage.current, prefersReducedMotion());
       obj.onShape = setShape;
       objRef.current = obj;
+      registerStreamPart("hero", obj);
       stage.current.dataset.live = "true";
     });
     return () => {
       cancelled = true;
+      registerStreamPart("hero", null);
       objRef.current?.dispose();
       objRef.current = null;
     };
