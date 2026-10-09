@@ -123,3 +123,14 @@ body {
 .kinetic-name .split-char {
   pointer-events: auto;
 }
+
+/* boot log prompt caret */
+.boot-caret {
+  animation: caret 0.9s steps(1) infinite;
+}
+@keyframes caret {
+  50% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .boot-caret { animation: none; }
+}
