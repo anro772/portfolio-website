@@ -8,7 +8,8 @@ const RAMP = " .,:;-=+*cox%#&@";
 const NOISE = "01<>/\\[]{}#*+=";
 
 /** z: depth in -0.5..1, the wall sits behind, bright features sit nearest */
-type Cell = { ch: string; v: number; z: number; r: number; g: number; b: number };
+/** nx/ny/nz: surface normal, treating glyph density as a height map, for cursor relighting */
+type Cell = { ch: string; v: number; z: number; r: number; g: number; b: number; nx: number; ny: number; nz: number };
 
 const hex = (h: string) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 const DUO_LO = hex("#ff5a1f");
@@ -41,6 +42,7 @@ export class AsciiPortrait {
   private pointer = { x: -1e4, y: -1e4, inside: false };
   // parallax tilt, -1..1 on each axis, eased toward the target inside draw()
   private tilt = { tx: 0, ty: 0, x: 0, y: 0 };
+  private light = 0;
   private ready = false;
   private visible = false;
   private io: IntersectionObserver;
@@ -232,10 +234,46 @@ export class AsciiPortrait {
           ch: RAMP[Math.min(RAMP.length - 1, Math.floor(v * RAMP.length))],
           v,
           z: v * (1 - wall[i]) - wall[i] * 0.5,
+          nx: 0,
+          ny: 0,
+          nz: 1,
           r: data[i * 4],
           g: data[i * 4 + 1],
           b: data[i * 4 + 2],
         });
+      }
+    }
+    this.buildNormals();
+  }
+
+  /** Smooth the density field, then take its slope: bright features become raised relief. */
+  private buildNormals() {
+    const { cols, rows } = this;
+    let h = Float32Array.from(this.cells, (c) => c.v);
+    const tmp = new Float32Array(h.length);
+    const at = (a: Float32Array, x: number, y: number) =>
+      a[Math.min(rows - 1, Math.max(0, y)) * cols + Math.min(cols - 1, Math.max(0, x))];
+    for (let pass = 0; pass < 2; pass++) {
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          let sum = 0;
+          for (let j = -1; j <= 1; j++) for (let i = -1; i <= 1; i++) sum += at(h, x + i, y + j);
+          tmp[y * cols + x] = sum / 9;
+        }
+      }
+      h = Float32Array.from(tmp);
+    }
+    const relief = 5;
+    const aspect = this.cw / this.ch;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const gx = (at(h, x + 1, y) - at(h, x - 1, y)) * relief;
+        const gy = (at(h, x, y + 1) - at(h, x, y - 1)) * relief * aspect;
+        const len = Math.hypot(gx, gy, 1);
+        const c = this.cells[y * cols + x];
+        c.nx = -gx / len;
+        c.ny = -gy / len;
+        c.nz = 1 / len;
       }
     }
   }
@@ -304,7 +342,12 @@ export class AsciiPortrait {
 
     const px = this.pointer.x / cw;
     const py = this.pointer.y / ch;
-    const radius = 7;
+    // the cursor is a lamp hovering over the face: eased in on enter, out on leave
+    this.light += ((this.pointer.inside ? 1 : 0) - this.light) * 0.12;
+    const light = this.light;
+    const lit = light > 0.002;
+    const SPOT = 18; // cells
+    const LAMP_H = 9; // lamp height above the surface, cells
 
     const tl = this.tilt;
     tl.x += (tl.tx - tl.x) * 0.1;
@@ -350,17 +393,24 @@ export class AsciiPortrait {
       // the leading edge of the type-in flickers
       if (i > typed - cols * 2 && typed < total) glyph = NOISE[(Math.random() * NOISE.length) | 0];
 
-      if (this.pointer.inside) {
+      if (lit) {
+        // relight: diffuse from a point lamp at the cursor, falling off into shadow away from it
         const dx = x - px;
         const dy = (y - py) * (ch / cw);
-        const d = Math.sqrt(dx * dx + dy * dy);
-        if (d < radius) {
-          const k = 1 - d / radius;
-          if (Math.random() < k * 0.5) glyph = NOISE[(Math.random() * NOISE.length) | 0];
-          r += (255 - r) * k * 0.6;
-          g += (90 - g) * k * 0.6;
-          b += (31 - b) * k * 0.6;
-        }
+        const spot = Math.exp(-(dx * dx + dy * dy) / (2 * SPOT * SPOT));
+        const ll = Math.hypot(dx, dy, LAMP_H);
+        const ndl = Math.max(0, (-dx * c.nx - dy * c.ny + LAMP_H * c.nz) / ll);
+        const k = 1 + (0.45 + (0.3 + 1.15 * ndl) * spot - 1) * light;
+        // the light also re-renders the glyphs: lit relief gets denser characters
+        const v2 = Math.min(0.999, c.v * (0.65 + 0.7 * k));
+        const idx = Math.floor(v2 * RAMP.length);
+        if (idx === 0) continue;
+        if (glyph === c.ch) glyph = RAMP[idx];
+        // a warm highlight where the relief faces the lamp head-on
+        const spec = Math.pow(ndl, 14) * spot * light;
+        r = (r + (255 - r) * spec * 0.75) * k;
+        g = (g + (176 - g) * spec * 0.75) * k;
+        b = (b + (128 - b) * spec * 0.75) * k;
       }
 
       // atmospheric depth: the far wall dims, near features stay full strength
@@ -377,7 +427,7 @@ export class AsciiPortrait {
       ctx.fillRect(x * cw, y * ch, cw, ch);
     }
 
-    return typed < total || colorT < 1.2 || sweepT < 1 || this.pointer.inside || tilting;
+    return typed < total || colorT < 1.2 || sweepT < 1 || this.pointer.inside || tilting || light > 0.002;
   }
 
   dispose() {

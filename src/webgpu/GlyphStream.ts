@@ -51,7 +51,7 @@ fn bez(a: vec2f, b: vec2f, c: vec2f, d: vec2f, t: f32) -> vec2f {
   let start = t2.y;
 
   // each glyph's flight is a pure function of scroll progress: fully reversible
-  let lt = clamp((u.progress - start) / (0.3 + seed * 0.08), 0.0, 1.0);
+  let lt = clamp((u.progress - start) / (0.42 + seed * 0.1), 0.0, 1.0);
   let e = ease(lt);
   let sway = (seed - 0.5) * u.viewport.x * 0.42;
   let drop = dst.y - src.y;
@@ -111,8 +111,13 @@ export class GlyphStream {
   private count = 0;
   private cell: [number, number] = [7, 11];
   private loop: FrameLoopHandle | null = null;
+  // playback chases the scroll target at a capped, eased rate, so even a fast flick plays out
+  private target = 0;
   private progress = 0;
   private fade = 1;
+  private static MAX_RATE = 0.42; // progress per second: a full pour takes at least ~2.4 s
+  /** Called with the played-back progress each frame (drives the hero dissolve and portrait reveal). */
+  onShown?: (p: number) => void;
   private disposed = false;
   onFail?: (err: unknown) => void;
 
@@ -197,7 +202,7 @@ export class GlyphStream {
       data[o + 8] = seed;
       // top rows of the portrait leave first, with scatter so it pours rather than marches
       const row = (c.y - minY) / Math.max(1, maxY - minY);
-      data[o + 9] = 0.06 + (row * 0.7 + Math.random() * 0.3) * 0.5;
+      data[o + 9] = 0.03 + (row * 0.7 + Math.random() * 0.3) * 0.44;
     }
 
     if (!this.inst || this.count !== n) {
@@ -236,12 +241,22 @@ export class GlyphStream {
     });
   }
 
-  /** Scroll-scrubbed progress; the loop only runs while the stream is mid-flight. */
-  setProgress(p: number, fade: number) {
-    this.progress = p;
-    this.fade = fade;
-    if (p > 0 && p < 1) this.start();
-    else this.stop();
+  /** Scroll target in [0, 1]; the loop runs until playback has caught up and the stream is at rest. */
+  setTarget(p: number) {
+    this.target = Math.min(1, Math.max(0, p));
+    if (this.target !== this.progress) this.start();
+  }
+
+  private advance(dt: number) {
+    const diff = this.target - this.progress;
+    let step = diff * (1 - Math.exp(-dt * 3.2));
+    const cap = GlyphStream.MAX_RATE * dt;
+    step = Math.max(-cap, Math.min(cap, step));
+    this.progress = Math.abs(diff) < 1e-4 ? this.target : this.progress + step;
+    const t = Math.min(1, Math.max(0, (this.progress - 0.88) / 0.12));
+    this.fade = 1 - t * t * (3 - 2 * t);
+    this.onShown?.(this.progress);
+    if (this.progress === this.target && (this.progress <= 0 || this.progress >= 1)) this.stop();
   }
 
   private start() {
@@ -249,6 +264,7 @@ export class GlyphStream {
     const time = clock(this.gpu);
     this.loop = frameLoop(this.gpu, (f) => {
       try {
+        this.advance(Math.min(0.05, time.deltaTime || 1 / 60));
         this.drawing!.set({
           u: {
             progress: this.progress,

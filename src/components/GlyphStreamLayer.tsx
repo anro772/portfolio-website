@@ -38,10 +38,11 @@ export function GlyphStreamLayer() {
       });
     };
 
-    const apply = (p: number) => {
+    // scroll sets the target; the stream plays toward it at its own eased, capped pace
+    const apply = (p: number) => stream?.setTarget(p);
+    const show = (p: number) => {
       const { hero, portrait } = streamParts();
-      stream?.setProgress(p, 1 - smooth(0.88, 1, p));
-      hero?.setDissolve(smooth(0.03, 0.62, p));
+      hero?.setDissolve(smooth(0.03, 0.6, p));
       portrait?.setVisibility(smooth(0.84, 0.98, p));
       el.style.visibility = p > 0 && p < 1 ? "visible" : "hidden";
     };
@@ -73,6 +74,7 @@ export function GlyphStreamLayer() {
         }
         stream = s;
         s.onFail = giveUp;
+        s.onShown = show;
       } catch {
         if (!cancelled) portrait.setStreamMode(false);
         return;
@@ -86,10 +88,9 @@ export function GlyphStreamLayer() {
       aim();
       trigger = ScrollTrigger.create({
         trigger: "#top",
-        start: "15% top",
+        start: "5% top",
         endTrigger: "#about figure",
-        end: "top 30%",
-        scrub: 0.5,
+        end: "top 15%",
         onUpdate: (self) => apply(self.progress),
         // re-aim on the way in: the portrait colour mode may have changed since last time
         onToggle: (self) => self.isActive && aim(),
