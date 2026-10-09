@@ -11,18 +11,34 @@ export function Experience() {
   useEffect(() => {
     const reduce = prefersReducedMotion();
     const ctx = gsap.context(() => {
-      gsap.utils.toArray<HTMLElement>(".role").forEach((el, i) => {
+      const roles = gsap.utils.toArray<HTMLElement>(".role");
+      // the pinned year follows the last role whose top has crossed 55% of the viewport; derived from
+      // positions on every update, so fast flicks and jumps still land on the right year
+      let current = -1;
+      const show = (i: number) => {
+        if (i === current) return;
+        current = i;
         const role = experience[i];
-        ScrollTrigger.create({
-          trigger: el,
-          start: "top 55%",
-          end: "bottom 55%",
-          onToggle: (self) => {
-            if (!self.isActive) return;
-            if (year.current && year.current.textContent !== role.year) scramble(year.current, role.year, 500);
-            if (company.current && company.current.textContent !== role.company) scramble(company.current, role.company, 500);
-          },
+        if (year.current && year.current.textContent !== role.year) scramble(year.current, role.year, 500);
+        if (company.current && company.current.textContent !== role.company) scramble(company.current, role.company, 500);
+      };
+      const pick = () => {
+        const line = window.innerHeight * 0.55;
+        let idx = 0;
+        roles.forEach((el, i) => {
+          if (el.getBoundingClientRect().top < line) idx = i;
         });
+        show(idx);
+      };
+      ScrollTrigger.create({
+        trigger: root.current,
+        start: "top bottom",
+        end: "bottom top",
+        onUpdate: pick,
+        onRefresh: pick,
+      });
+
+      roles.forEach((el) => {
         if (reduce) return;
         const title = el.querySelector<HTMLElement>(".role-title");
         ScrollTrigger.create({

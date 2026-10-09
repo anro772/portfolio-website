@@ -82,6 +82,9 @@ export function ZeroRollbacks() {
         start: "top top",
         end: small ? "+=120%" : "+=160%",
         pin: true,
+        // this pin is created after WebGPU boots, i.e. after every trigger below it (Experience,
+        // Work...). Refreshing it first lets those triggers include its pin spacing.
+        refreshPriority: 1,
         scrub: 0.6,
         onUpdate: (self) => {
           const p = storyPosition(self.progress);
@@ -107,6 +110,9 @@ export function ZeroRollbacks() {
     const spacer = root.current!.parentElement!;
     const io = new IntersectionObserver(([e]) => renderer.current?.setActive(e.isIntersecting));
     io.observe(spacer);
+    // re-measure everything now that the pin has added its height to the page
+    ScrollTrigger.sort();
+    ScrollTrigger.refresh();
     return () => {
       io.disconnect();
       ctx.revert();
