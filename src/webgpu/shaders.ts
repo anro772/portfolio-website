@@ -31,10 +31,13 @@ fn curl(p: vec3f) -> vec2f {
 
 /** Seeds every particle as a loose nebula around the figure centre. */
 export const INIT_WGSL = /* wgsl */ `
-struct Seed { size: f32, aspect: f32, center: vec2f }
+// order > 0 seeds straight onto the figure on screen (used when a tier is swapped in mid-story)
+struct Seed { size: f32, order: f32, center: vec2f, weights: vec4f }
 @group(0) @binding(0) var<uniform> seed: Seed;
 @group(0) @binding(1) var posOut: texture_storage_2d<rgba32float, write>;
 @group(0) @binding(2) var velOut: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(3) var<storage, read> targetsA: array<vec4f>;
+@group(0) @binding(4) var<storage, read> targetsB: array<vec4f>;
 
 // PCG integer hash: no visible structure across neighbouring indices
 fn pcg(v: u32) -> u32 {
@@ -51,8 +54,12 @@ fn cs_init(@builtin(global_invocation_id) gid: vec3u) {
   let i = gid.y * w + gid.x;
   let a = rnd(i * 3u) * 6.2831853;
   let r = pow(rnd(i * 3u + 1u), 0.6);
-  let p = seed.center + vec2f(cos(a) * r * 0.75, sin(a) * r * 0.62);
-  let z = (rnd(i * 3u + 2u) - 0.5) * 0.5;
+  let cloud = seed.center + vec2f(cos(a) * r * 0.75, sin(a) * r * 0.62);
+  let ta = targetsA[i];
+  let tb = targetsB[i];
+  let figure = ta.xy * seed.weights.x + ta.zw * seed.weights.y + tb.xy * seed.weights.z;
+  let p = mix(cloud, figure, seed.order);
+  let z = (rnd(i * 3u + 2u) - 0.5) * mix(0.5, 0.18, seed.order);
   textureStore(posOut, gid.xy, vec4f(p, z, 1.0));
   textureStore(velOut, gid.xy, vec4f(0.0));
 }

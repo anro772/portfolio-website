@@ -1,17 +1,4 @@
-import {
-  clock,
-  compute,
-  draw,
-  effect,
-  frameLoop,
-  init,
-  sampler,
-  storage,
-  surface,
-  target,
-  texture,
-  frame,
-} from "vgpu";
+import { clock, compute, draw, effect, frame, frameLoop, init, sampler, storage, surface, target, texture } from "vgpu";
 import type { Compute, Draw, Effect, Frame, FrameLoopHandle, Gpu, StorageBuffer, Surface, Target, Texture } from "vgpu";
 import { buildTargets } from "./targets";
 import { BLUR_WGSL, BRIGHT_WGSL, COMPOSITE_WGSL, INIT_WGSL, PARTICLE_WGSL, SIM_WGSL } from "./shaders";
@@ -49,46 +36,89 @@ export function beats(p: number) {
   return { w, order, stage3: smooth(2.55, 2.95, p) };
 }
 
+/** Everything one quality tier owns. Built off-screen, swapped in whole, destroyed after. */
+type Swarm = {
+  tier: Tier;
+  side: number;
+  pos: [Texture, Texture];
+  vel: [Texture, Texture];
+  targetsA: StorageBuffer;
+  targetsB: StorageBuffer;
+  sim: Compute;
+  particles: Draw;
+  fills: number[];
+  ping: number;
+};
+
+/**
+ * Frame-health policy after vgpu's adaptive-quality example: only visible, running frames count,
+ * any gap over 250 ms (tab switch, loop restart) resets the window, and a verdict needs 2 s of
+ * active time. Presented FPS below 80% of 60 asks for the low tier, once.
+ */
+class FrameHealth {
+  private duration = 0;
+  private frames = 0;
+  private warmup = 30;
+  private decided = false;
+  record(deltaMs: number): boolean {
+    if (this.decided) return false;
+    if (document.visibilityState !== "visible" || !(deltaMs > 0) || deltaMs > 250) {
+      this.reset();
+      return false;
+    }
+    // shader compilation and the first uploads land in the first frames; do not judge them
+    if (this.warmup > 0) {
+      this.warmup--;
+      return false;
+    }
+    this.duration += deltaMs;
+    this.frames++;
+    if (this.duration < 2000) return false;
+    const fps = (this.frames * 1000) / this.duration;
+    this.duration = 0;
+    this.frames = 0;
+    if (fps < 48) {
+      this.decided = true;
+      return true;
+    }
+    return false;
+  }
+  reset() {
+    this.duration = 0;
+    this.frames = 0;
+    this.warmup = Math.max(this.warmup, 10);
+  }
+}
+
 export class ZeroRollbacks {
   private gpu!: Gpu;
   private out!: Surface;
   private hdr!: Target;
   private halfA!: Target;
   private halfB!: Target;
-  private pos!: [Texture, Texture];
-  private vel!: [Texture, Texture];
-  private targetsA!: StorageBuffer;
-  private targetsB!: StorageBuffer;
-  private seed!: Compute;
-  private sim!: Compute;
-  private particles!: Draw;
   private bright!: Effect;
   private blurH!: Effect;
   private blurV!: Effect;
   private composite!: Effect;
+  private swarm!: Swarm;
+  private swapping = false;
   private loop: FrameLoopHandle | null = null;
-  private ping = 0;
-  private side: number;
   private aspect = 1;
   private unsubResize: (() => void) | null = null;
   private retarget = 0;
   private time = 0;
-  private fills = [0.08, 0.08, 0.05];
+  private health = new FrameHealth();
 
   private progress = 0;
   private fade = 1;
   private pointer = { x: 0, y: 0, vx: 0, vy: 0, active: 0, target: 0 };
   private tilt = { x: 0, y: 0, tx: 0, ty: 0 };
-  private frames: number[] = [];
-  private judged = false;
   private disposed = false;
 
-  onSlow?: () => void;
+  /** Called once on any GPU or encoding failure; the caller swaps in the static fallback. */
   onFail?: (err: unknown) => void;
 
-  private constructor(private canvas: HTMLCanvasElement, private tier: Tier) {
-    this.side = SIDE[tier];
-  }
+  private constructor(private canvas: HTMLCanvasElement, private startTier: Tier) {}
 
   /** Throws (VGPU-RING1-UNSUPPORTED) when WebGPU is unavailable, so callers can fall back. */
   static async create(canvas: HTMLCanvasElement, tier: Tier) {
@@ -97,73 +127,31 @@ export class ZeroRollbacks {
     return z;
   }
 
+  get tier() {
+    return this.swarm.tier;
+  }
+
+  get running() {
+    return this.loop !== null;
+  }
+
+  private fail(err: unknown) {
+    if (this.disposed) return;
+    console.error("[zero-rollbacks]", err);
+    this.stop();
+    this.onFail?.(err);
+  }
+
   private async setup() {
     const gpu = (this.gpu = await init({ powerPreference: "high-performance" }));
-    gpu.onError((err) => {
-      this.stop();
-      this.onFail?.(err);
-    });
-    const n = this.side;
-    this.out = surface(gpu, this.canvas, { dpr: this.tier === "high" ? [1, 1.75] : 1 });
+    gpu.onError((err) => this.fail(err));
+    this.out = surface(gpu, this.canvas, { dpr: this.startTier === "high" ? [1, 1.75] : 1 });
     const [w, h] = this.out.size;
+    this.aspect = w / h;
     this.hdr = target(gpu, { size: [w, h], format: "rgba16float", label: "zr-hdr" });
     const half: [number, number] = [Math.max(1, w >> 1), Math.max(1, h >> 1)];
     this.halfA = target(gpu, { size: half, format: "rgba16float", label: "zr-half-a" });
     this.halfB = target(gpu, { size: half, format: "rgba16float", label: "zr-half-b" });
-
-    const stateTex = (label: string) =>
-      texture(gpu, {
-        kind: "2d",
-        size: [n, n],
-        format: "rgba32float",
-        usage: ["storage_binding", "texture_binding"],
-        label,
-      });
-    this.pos = [stateTex("zr-pos-0"), stateTex("zr-pos-1")];
-    this.vel = [stateTex("zr-vel-0"), stateTex("zr-vel-1")];
-    const bytes = n * n * 16;
-    this.targetsA = storage(gpu, bytes, "read");
-    this.targetsB = storage(gpu, bytes, "read");
-
-    this.aspect = w / h;
-    await document.fonts.ready;
-    this.writeTargets();
-
-    const center = this.figureCenter();
-    this.seed = compute(gpu, INIT_WGSL, {
-      label: "zr-seed",
-      set: { seed: { size: n, aspect: this.aspect, center }, posOut: this.pos[0], velOut: this.vel[0] },
-    });
-    this.seed.dispatch(Math.ceil(n / 8), Math.ceil(n / 8));
-
-    this.sim = compute(gpu, SIM_WGSL, {
-      label: "zr-sim",
-      set: {
-        sim: {
-          time: 0,
-          dt: 0.016,
-          order: 0,
-          turbulence: 1.4,
-          weights: [1, 0, 0, 0],
-          center,
-          pointer: [0, 0],
-          pointerVel: [0, 0],
-          pointerActive: 0,
-          size: n,
-        },
-        targetsA: this.targetsA,
-        targetsB: this.targetsB,
-      },
-    });
-
-    this.particles = draw(gpu, {
-      shader: PARTICLE_WGSL,
-      label: "zr-particles",
-      vertices: 6,
-      instances: n * n,
-      blend: "additive",
-      set: { view: this.viewUniform() },
-    });
 
     const linear = sampler(gpu, { minFilter: "linear", magFilter: "linear" });
     this.bright = effect(gpu, BRIGHT_WGSL, { label: "zr-bright", set: { src: this.hdr, samp: linear } });
@@ -180,35 +168,96 @@ export class ZeroRollbacks {
       set: { comp: { bloom: 1.25, fade: 1, ink: INK }, scene: this.hdr, glow: this.halfA, samp: linear },
     });
 
+    await document.fonts.ready;
+    this.swarm = await this.buildSwarm(this.startTier);
     this.unsubResize = this.out.onResize(({ width, height }) => this.resize(width, height));
     await gpu.settled();
   }
 
+  private async buildSwarm(tier: Tier): Promise<Swarm> {
+    const gpu = this.gpu;
+    const n = SIDE[tier];
+    const stateTex = (label: string) =>
+      texture(gpu, {
+        kind: "2d",
+        size: [n, n],
+        format: "rgba32float",
+        usage: ["storage_binding", "texture_binding"],
+        label,
+      });
+    const pos: [Texture, Texture] = [stateTex(`zr-${tier}-pos-0`), stateTex(`zr-${tier}-pos-1`)];
+    const vel: [Texture, Texture] = [stateTex(`zr-${tier}-vel-0`), stateTex(`zr-${tier}-vel-1`)];
+    const targetsA = storage(gpu, n * n * 16, "read");
+    const targetsB = storage(gpu, n * n * 16, "read");
+    const { a, b, fills } = buildTargets(n * n, this.aspect);
+    targetsA.write(a);
+    targetsB.write(b);
+
+    const center = this.figureCenter();
+    const seed = compute(gpu, INIT_WGSL, {
+      label: `zr-${tier}-seed`,
+      set: {
+        // seed onto whatever the story currently shows, so a mid-story tier swap is seamless
+        seed: { size: n, order: beats(this.progress).order, center, weights: [...beats(this.progress).w, 0] },
+        posOut: pos[0],
+        velOut: vel[0],
+        targetsA,
+        targetsB,
+      },
+    });
+    seed.dispatch(Math.ceil(n / 8), Math.ceil(n / 8));
+
+    const sim = compute(gpu, SIM_WGSL, {
+      label: `zr-${tier}-sim`,
+      set: {
+        sim: {
+          time: this.time,
+          dt: 1 / 60,
+          order: 0,
+          turbulence: 1.4,
+          weights: [1, 0, 0, 0],
+          center,
+          pointer: [0, 0],
+          pointerVel: [0, 0],
+          pointerActive: 0,
+          size: n,
+        },
+        targetsA,
+        targetsB,
+      },
+    });
+    const particles = draw(gpu, {
+      shader: PARTICLE_WGSL,
+      label: `zr-${tier}-particles`,
+      vertices: 6,
+      instances: n * n,
+      blend: "additive",
+    });
+    // pre-warm the pipeline against the HDR target so the swap never hitches
+    await particles.compile(this.hdr);
+    return { tier, side: n, pos, vel, targetsA, targetsB, sim, particles, fills, ping: 0 };
+  }
+
+  /** Prepare the low tier off-screen while high keeps rendering, then swap atomically. */
+  private async downgrade() {
+    if (this.swapping || this.swarm.tier === "low" || this.disposed) return;
+    this.swapping = true;
+    try {
+      const next = await this.buildSwarm("low");
+      if (this.disposed) return;
+      const previous = this.swarm;
+      this.swarm = next;
+      for (const t of [...previous.pos, ...previous.vel]) t.destroy();
+    } catch (err) {
+      this.fail(err);
+    } finally {
+      this.swapping = false;
+    }
+  }
+
   private figureCenter(): [number, number] {
-    // mirrors targets.ts layout: right of centre on wide screens, upper centre on portrait
+    // mirrors targets.ts layout: right of centre on wide screens, centred on portrait
     return this.aspect >= 1.15 ? [(0.6 * 2 - 1) * this.aspect, 1 - 0.47 * 2] : [0, 1 - 0.5 * 2];
-  }
-
-  private writeTargets() {
-    const { a, b, fills } = buildTargets(this.side * this.side, this.aspect);
-    this.fills = fills;
-    this.targetsA.write(a);
-    this.targetsB.write(b);
-  }
-
-  private viewUniform() {
-    const [w, h] = this.out.size;
-    const count = this.side * this.side;
-    return {
-      aspect: this.aspect,
-      size: this.side,
-      intensity: this.intensity(count, w * h),
-      stage3: beats(this.progress).stage3,
-      tilt: [this.tilt.x, this.tilt.y],
-      pxToClip: [2 / w, 2 / h],
-      dpr: this.out.dpr,
-      fade: 1,
-    };
   }
 
   /**
@@ -217,7 +266,8 @@ export class ZeroRollbacks {
    */
   private intensity(count: number, screenPx: number) {
     const { w, order } = beats(this.progress);
-    const figure = w[0] * this.fills[0] + w[1] * this.fills[1] + w[2] * this.fills[2];
+    const f = this.swarm.fills;
+    const figure = w[0] * f[0] + w[1] * f[1] + w[2] * f[2];
     const area = (0.24 + (figure - 0.24) * order) * screenPx;
     const dotPx = Math.pow(1.5 * this.out.dpr, 2) * 0.6;
     return Math.min(1.2, (1.15 * area) / (count * dotPx));
@@ -231,6 +281,7 @@ export class ZeroRollbacks {
     this.halfB.resize(half);
     this.blurH.set({ blur: { step: [1 / half[0], 0] } });
     this.blurV.set({ blur: { step: [0, 1 / half[1]] } });
+    this.health.reset();
     const aspect = width / height;
     if (Math.abs(aspect - this.aspect) > 0.02) {
       this.aspect = aspect;
@@ -238,8 +289,12 @@ export class ZeroRollbacks {
       window.clearTimeout(this.retarget);
       this.retarget = window.setTimeout(() => {
         if (this.disposed) return;
-        this.writeTargets();
-        this.sim.set({ sim: { center: this.figureCenter() } });
+        const s = this.swarm;
+        const { a, b, fills } = buildTargets(s.side * s.side, this.aspect);
+        s.targetsA.write(a);
+        s.targetsB.write(b);
+        s.fills = fills;
+        s.sim.set({ sim: { center: this.figureCenter() } });
       }, 220);
     }
   }
@@ -278,13 +333,25 @@ export class ZeroRollbacks {
     this.tilt.ty = ((y / r.height) * 2 - 1) * 0.1;
   }
 
+  /** Run or pause the loop. Idempotent: safe to call on every visibility change. */
+  setActive(active: boolean) {
+    if (active) this.start();
+    else this.stop();
+  }
+
   start() {
     if (this.loop || this.disposed) return;
     const time = clock(this.gpu);
+    this.health.reset();
     this.loop = frameLoop(this.gpu, (f) => {
-      const dt = Math.min(1 / 30, Math.max(1 / 240, time.deltaTime || 1 / 60));
-      this.judge(dt);
-      this.tick(f, dt);
+      // a tick that throws would silently end the loop; surface it and fall back instead
+      try {
+        const raw = time.deltaTime * 1000;
+        if (this.health.record(raw)) void this.downgrade();
+        this.tick(f, Math.min(1 / 30, Math.max(1 / 240, time.deltaTime || 1 / 60)));
+      } catch (err) {
+        this.fail(err);
+      }
     });
   }
 
@@ -295,18 +362,19 @@ export class ZeroRollbacks {
 
   private tick(f: Frame, dt: number) {
     this.time += dt;
-    this.step(dt);
-    const write = 1 - this.ping;
-    this.particles.set({ posTex: this.pos[write], velTex: this.vel[write] });
-    f.pass({ target: this.hdr, clear: [0, 0, 0, 1] }, this.particles);
+    const s = this.swarm;
+    this.step(s, dt);
+    const write = 1 - s.ping;
+    s.particles.set({ posTex: s.pos[write], velTex: s.vel[write] });
+    f.pass({ target: this.hdr, clear: [0, 0, 0, 1] }, s.particles);
     f.pass(this.halfA, this.bright);
     f.pass(this.halfB, this.blurH);
     f.pass(this.halfA, this.blurV);
     f.pass(this.out, this.composite);
-    this.ping = write;
+    s.ping = write;
   }
 
-  private step(dt: number) {
+  private step(s: Swarm, dt: number) {
     const { w, order, stage3 } = beats(this.progress);
     const p = this.pointer;
     p.active += (p.target - p.active) * 0.12;
@@ -317,9 +385,9 @@ export class ZeroRollbacks {
     this.tilt.x += (this.tilt.tx - this.tilt.x) * 0.06;
     this.tilt.y += (this.tilt.ty - this.tilt.y) * 0.06;
 
-    const read = this.ping;
+    const read = s.ping;
     const write = 1 - read;
-    this.sim.set({
+    s.sim.set({
       sim: {
         time: this.time,
         dt,
@@ -329,26 +397,27 @@ export class ZeroRollbacks {
         pointerVel: vel,
         pointerActive: p.active,
       },
-      posIn: this.pos[read],
-      velIn: this.vel[read],
-      posOut: this.pos[write],
-      velOut: this.vel[write],
+      posIn: s.pos[read],
+      velIn: s.vel[read],
+      posOut: s.pos[write],
+      velOut: s.vel[write],
     });
-    this.sim.dispatch(Math.ceil(this.side / 8), Math.ceil(this.side / 8));
+    s.sim.dispatch(Math.ceil(s.side / 8), Math.ceil(s.side / 8));
 
-    const view = this.viewUniform();
-    this.particles.set({ view: { ...view, stage3, fade: 1 } });
+    const [width, height] = this.out.size;
+    s.particles.set({
+      view: {
+        aspect: this.aspect,
+        size: s.side,
+        intensity: this.intensity(s.side * s.side, width * height),
+        stage3,
+        tilt: [this.tilt.x, this.tilt.y],
+        pxToClip: [2 / width, 2 / height],
+        dpr: this.out.dpr,
+        fade: 1,
+      },
+    });
     this.composite.set({ comp: { fade: this.fade } });
-  }
-
-  /** Downgrade once: if the first ~90 frames average over 22 ms, ask for the low tier. */
-  private judge(dt: number) {
-    if (this.judged || this.tier === "low") return;
-    this.frames.push(dt);
-    if (this.frames.length < 90) return;
-    this.judged = true;
-    const avg = this.frames.slice(20).reduce((a, b) => a + b, 0) / (this.frames.length - 20);
-    if (avg > 0.022) this.onSlow?.();
   }
 
   stop() {

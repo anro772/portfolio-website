@@ -57,13 +57,8 @@ export function ZeroRollbacks() {
       current = r;
       if (import.meta.env.DEV) (window as unknown as { __zr?: Renderer }).__zr = r;
       renderer.current = r;
+      // slow devices downgrade inside the renderer; only a real failure swaps in the static band
       r.onFail = () => !cancelled && setMode("fallback");
-      // a device that cannot hold the high tier rebuilds once at the low tier
-      r.onSlow = () => {
-        if (cancelled) return;
-        r.dispose();
-        boot("low").catch(() => !cancelled && setMode("fallback"));
-      };
       setMode("gpu");
       ScrollTrigger.refresh();
     };
@@ -97,22 +92,23 @@ export function ZeroRollbacks() {
           });
         },
       });
-      ScrollTrigger.create({
-        trigger: root.current,
-        start: "top bottom",
-        end: "bottom top",
-        onToggle: (self) => (self.isActive ? renderer.current?.start() : renderer.current?.stop()),
-      });
+      // The pin spacer spans the whole pinned distance; the section itself does not (it is fixed
+      // while pinned), so anything measured on it would stop the loop halfway through the story.
+      const spacer = root.current!.parentElement!;
       // the 0 dims as Experience scrolls over it
       ScrollTrigger.create({
-        trigger: root.current,
+        trigger: spacer,
         start: "bottom 85%",
         end: "bottom top",
         scrub: true,
         onUpdate: (self) => renderer.current?.setFade(1 - self.progress * 0.85),
       });
     }, root);
+    const spacer = root.current!.parentElement!;
+    const io = new IntersectionObserver(([e]) => renderer.current?.setActive(e.isIntersecting));
+    io.observe(spacer);
     return () => {
+      io.disconnect();
       ctx.revert();
       renderer.current?.stop();
     };
