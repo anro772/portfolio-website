@@ -14,6 +14,8 @@ export function Hero({ ready }: { ready: boolean }) {
   const content = useRef<HTMLDivElement>(null);
   const objRef = useRef<Morph | null>(null);
   const [shape, setShape] = useState(0);
+  // mouse users get the decode lens as their cursor over the object; touch keeps the drag label
+  const [fineLens] = useState(() => window.matchMedia("(pointer: fine)").matches && !prefersReducedMotion());
 
   // WebGL is a progressive layer: only created if WebGL2 is really available
   useEffect(() => {
@@ -67,7 +69,7 @@ export function Hero({ ready }: { ready: boolean }) {
       <div
         ref={stage}
         aria-hidden
-        data-cursor="drag"
+        data-cursor={fineLens ? "lens" : "drag"}
         className="absolute inset-0 cursor-grab data-[grabbing]:cursor-grabbing bg-[radial-gradient(60%_60%_at_68%_45%,#1c1c1f_0%,#0c0c0d_70%)]"
       />
       <div

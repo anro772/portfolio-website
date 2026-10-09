@@ -50,6 +50,15 @@ uniform float uZoom;
 uniform float uRatio;
 uniform mat3 uRot;     // world -> object
 uniform float uMorph;  // integer part = shape, fraction = blend to the next
+// decode lens: the same scene, rendered at full resolution into a small magnified square
+uniform float uLensMode;
+uniform vec2 uLensCenter;  // physical px, bottom-left origin
+uniform float uLensSize;   // lens target side, physical px
+uniform float uLensZoom;
+uniform vec2 uCellPx;      // one character cell, physical px
+uniform vec3 uBone;
+uniform vec3 uSignal;
+uniform vec3 uInk;
 out vec4 fragColor;
 
 const float PHI = 1.618034;
@@ -193,7 +202,10 @@ float hash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); 
 
 void main() {
   // grid cells are taller than wide: stretch y so the object keeps its proportions
-  vec2 fc = gl_FragCoord.xy * vec2(1.0, uRatio);
+  vec2 grid = uLensMode > 0.5
+    ? (uLensCenter + (gl_FragCoord.xy - 0.5 * uLensSize) / uLensZoom) / uCellPx
+    : gl_FragCoord.xy;
+  vec2 fc = grid * vec2(1.0, uRatio);
   vec2 uv = (fc - 0.5 * uRes) / uRes.y;
   uv -= uOffset;
   vec3 ro = vec3(0.0, 0.0, 4.1 - uZoom);
@@ -208,6 +220,25 @@ void main() {
     if (m.x < 0.001) { hit = true; acc = m.y; break; }
     t += m.x * 0.65;
     if (t > 11.0) break;
+  }
+
+  if (uLensMode > 0.5) {
+    // true colour inside the lens: glossy bone body, signal rim and accents
+    vec3 col = uInk * 1.25;
+    if (hit) {
+      vec3 p = ro + rd * t;
+      vec3 n = normalAt(p);
+      vec3 l = normalize(uLight - p);
+      float diff = max(dot(n, l), 0.0);
+      vec3 hv = normalize(l - rd);
+      float spec = pow(max(dot(n, hv), 0.0), 48.0);
+      float fres = pow(1.0 - max(dot(n, -rd), 0.0), 2.5);
+      vec3 body = mix(uBone, uSignal, acc * 0.9);
+      col = body * (0.12 + diff * 0.78) + vec3(spec * 0.85);
+      col += uSignal * fres * (0.9 + uPulse * 1.6 + uCharge * 1.4);
+    }
+    fragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    return;
   }
 
   float lum = 0.0;
@@ -241,7 +272,15 @@ uniform vec3 uInk;
 uniform vec3 uBone;
 uniform vec3 uSignal;
 uniform float uReveal;
+uniform float uDissolve;     // 0 = intact, 1 = every glyph has left (glyph stream)
+uniform sampler2D uLensTex;
+uniform vec2 uLensCenter;    // physical px, bottom-left origin
+uniform float uLensRadius;   // physical px
+uniform float uLensSize;
+uniform float uLensAlpha;
 out vec4 fragColor;
+
+float h21(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 
 const uint GLYPHS[10] = uint[10](${packed.map((n) => `${n}u`).join(", ")});
 
@@ -265,7 +304,33 @@ void main() {
   }
   vec3 base = mix(uBone * 0.35, uBone, smoothstep(0.15, 0.9, s.r));
   vec3 color = mix(base, uSignal, smoothstep(0.25, 0.75, s.g));
-  fragColor = vec4(on && vis > 0.5 ? color : uInk, 1.0);
+  // glyphs leave bottom rows first, scattered, as the stream carries them down the page
+  float leave = h21(cellIdx) * 0.5 + (cellIdx.y / uGrid.y) * 0.5;
+  float stay = step(uDissolve * 1.15, leave);
+  vec3 outc = on && vis > 0.5 && stay > 0.5 ? color : uInk;
+
+  if (uLensAlpha > 0.001) {
+    vec2 d = frag - uLensCenter;
+    float r = uLensRadius;
+    float dist = length(d);
+    float inside = 1.0 - smoothstep(r - 1.5, r + 0.5, dist);
+    if (inside > 0.0) {
+      // 1:1 display of a magnified render; channels split toward the rim
+      vec2 uv = (d + 0.5 * uLensSize) / uLensSize;
+      float edge = smoothstep(r * 0.72, r, dist);
+      vec2 dir = d / max(dist, 1.0);
+      vec2 o = dir * edge * 2.2 / uLensSize;
+      vec3 lens = vec3(texture(uLensTex, uv + o).r, texture(uLensTex, uv).g, texture(uLensTex, uv - o).b);
+      lens *= 1.0 - 0.24 * smoothstep(r * 0.65, r, dist);
+      // glass highlight along the upper-left of the rim
+      float arc = smoothstep(0.55, 1.0, dot(dir, normalize(vec2(-0.7, 0.7)))) * smoothstep(r * 0.82, r * 0.97, dist);
+      lens += uBone * arc * 0.22;
+      outc = mix(outc, lens, inside * uLensAlpha);
+    }
+    float ring = 1.0 - smoothstep(0.0, 1.4, abs(dist - r));
+    outc = mix(outc, uBone * 0.85, ring * uLensAlpha * 0.9);
+  }
+  fragColor = vec4(outc, 1.0);
 }
 `;
 
@@ -290,6 +355,12 @@ export class AsciiMorph {
   private cellCss = { x: 9, y: 11 };
   private reveal = 0;
   private baseZoom = 0;
+
+  // decode lens (fine pointers only): a full-resolution, magnified render inside a loupe
+  private lensTarget: THREE.WebGLRenderTarget;
+  private lensEnabled: boolean;
+  private lens = { x: 0, y: 0, tx: 0, ty: 0, r: 0, over: false, snapped: false };
+  private static LENS_CSS = 150;
 
   // pointer
   private lightTarget = new THREE.Vector3(2, 2, 3);
@@ -347,6 +418,11 @@ export class AsciiMorph {
       magFilter: THREE.NearestFilter,
       type: THREE.HalfFloatType,
     });
+    this.lensTarget = new THREE.WebGLRenderTarget(1, 1, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+    });
+    this.lensEnabled = !staticFrame && window.matchMedia("(pointer: fine)").matches;
 
     const ink = new THREE.Color("#0c0c0d");
     const bone = new THREE.Color("#eceae4");
@@ -368,6 +444,14 @@ export class AsciiMorph {
         uRatio: { value: 1 },
         uRot: { value: new THREE.Matrix3() },
         uMorph: { value: 0 },
+        uLensMode: { value: 0 },
+        uLensCenter: { value: new THREE.Vector2() },
+        uLensSize: { value: 1 },
+        uLensZoom: { value: 1.3 },
+        uCellPx: { value: new THREE.Vector2(9, 11) },
+        uBone: { value: new THREE.Vector3(bone.r, bone.g, bone.b) },
+        uSignal: { value: new THREE.Vector3(signal.r, signal.g, signal.b) },
+        uInk: { value: new THREE.Vector3(ink.r, ink.g, ink.b) },
       },
     });
     this.asciiMat = new THREE.RawShaderMaterial({
@@ -382,6 +466,12 @@ export class AsciiMorph {
         uBone: { value: new THREE.Vector3(bone.r, bone.g, bone.b) },
         uSignal: { value: new THREE.Vector3(signal.r, signal.g, signal.b) },
         uReveal: { value: staticFrame ? 1 : 0 },
+        uDissolve: { value: 0 },
+        uLensTex: { value: this.lensTarget.texture },
+        uLensCenter: { value: new THREE.Vector2() },
+        uLensRadius: { value: 0 },
+        uLensSize: { value: 1 },
+        uLensAlpha: { value: 0 },
       },
     });
     this.sceneScene.add(new THREE.Mesh(this.geo, this.sceneMat));
@@ -402,6 +492,8 @@ export class AsciiMorph {
     window.addEventListener("pointerup", this.onUp);
     window.addEventListener("pointercancel", this.onUp);
     host.addEventListener("pointerdown", this.onDown);
+    host.addEventListener("pointermove", this.onLensMove, { passive: true });
+    host.addEventListener("pointerleave", this.onLensLeave);
 
     if (staticFrame) {
       this.reveal = 1;
@@ -460,6 +552,42 @@ export class AsciiMorph {
     this.angVel.y += ((dy * k) / dtm - this.angVel.y) * 0.5;
   };
 
+  private onLensMove = (e: PointerEvent) => {
+    if (!this.lensEnabled || e.pointerType !== "mouse") return;
+    const r = this.host.getBoundingClientRect();
+    const dpr = this.renderer.getPixelRatio();
+    this.lens.tx = (e.clientX - r.left) * dpr;
+    this.lens.ty = (r.height - (e.clientY - r.top)) * dpr;
+    if (!this.lens.over && !this.lens.snapped) {
+      // appear where the pointer is instead of sliding in from the last spot
+      this.lens.x = this.lens.tx;
+      this.lens.y = this.lens.ty;
+      this.lens.snapped = true;
+    }
+    this.lens.over = true;
+  };
+
+  private onLensLeave = () => {
+    this.lens.over = false;
+  };
+
+  /** 0 = intact, 1 = every glyph has left the object (driven by the glyph stream). */
+  setDissolve(t: number) {
+    this.asciiMat.uniforms.uDissolve.value = Math.min(1, Math.max(0, t));
+  }
+
+  /** The object on screen, in viewport CSS px: centre and an approximate radius. */
+  getObjectRegion() {
+    const r = this.host.getBoundingClientRect();
+    const off = this.sceneMat.uniforms.uOffset.value as THREE.Vector2;
+    const small = r.width < 768;
+    return {
+      x: r.left + r.width / 2 + off.x * r.height,
+      y: r.top + r.height / 2 - off.y * r.height,
+      radius: r.height * (small ? 0.2 : 0.3),
+    };
+  }
+
   private rotateUser(yaw: number, pitch: number) {
     this.qTmp.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
     this.qUser.premultiply(this.qTmp);
@@ -512,6 +640,11 @@ export class AsciiMorph {
     this.sceneMat.uniforms.uRatio.value = ratio;
     this.asciiMat.uniforms.uGrid.value.set(cols, rows);
     this.asciiMat.uniforms.uCell.value.set(this.cellCss.x * dpr, this.cellCss.y * dpr);
+    this.sceneMat.uniforms.uCellPx.value.set(this.cellCss.x * dpr, this.cellCss.y * dpr);
+    const lensSize = Math.ceil(AsciiMorph.LENS_CSS * 2 * dpr) + 4;
+    this.lensTarget.setSize(lensSize, lensSize);
+    this.sceneMat.uniforms.uLensSize.value = lensSize;
+    this.asciiMat.uniforms.uLensSize.value = lensSize;
     const aspect = w / h;
     this.baseZoom = small ? -2.2 : 0;
     this.sceneMat.uniforms.uOffset.value.set(small ? 0 : Math.min(0.42, aspect * 0.22), small ? 0.2 : 0.04);
@@ -569,12 +702,44 @@ export class AsciiMorph {
     u.uZoom.value = this.zoom + this.baseZoom;
     this.reveal = Math.min(1, this.reveal + dt * 0.7);
     this.asciiMat.uniforms.uReveal.value = 1 - Math.pow(1 - this.reveal, 3);
+    this.updateLens(dt);
+  }
+
+  private updateLens(dt: number) {
+    if (!this.lensEnabled) return;
+    const L = this.lens;
+    const dpr = this.renderer.getPixelRatio();
+    // full size near the object, fading out over empty space; tucked away while spinning it
+    const region = this.getObjectRegion();
+    const hostR = this.host.getBoundingClientRect();
+    const px = hostR.left + L.tx / dpr;
+    const py = hostR.top + hostR.height - L.ty / dpr;
+    const near = 1 - Math.min(1, Math.max(0, (Math.hypot(px - region.x, py - region.y) - region.radius * 1.1) / (region.radius * 0.9)));
+    const dissolved = this.asciiMat.uniforms.uDissolve.value as number;
+    const want = L.over && !this.dragging && dissolved < 0.05 ? AsciiMorph.LENS_CSS * dpr * near : 0;
+    L.r += (want - L.r) * (1 - Math.exp(-dt * 9));
+    if (L.r < 0.5 && !L.over) L.snapped = false;
+    const k = 1 - Math.exp(-dt * 14);
+    L.x += (L.tx - L.x) * k;
+    L.y += (L.ty - L.y) * k;
+    const a = this.asciiMat.uniforms;
+    a.uLensCenter.value.set(L.x, L.y);
+    a.uLensRadius.value = L.r;
+    a.uLensAlpha.value = Math.min(1, L.r / (24 * dpr));
+    this.sceneMat.uniforms.uLensCenter.value.set(L.x, L.y);
   }
 
   private render(dt: number) {
     this.update(dt);
     this.renderer.setRenderTarget(this.target);
     this.renderer.render(this.sceneScene, this.camera);
+    if (this.lens.r > 0.5) {
+      const u = this.sceneMat.uniforms;
+      u.uLensMode.value = 1;
+      this.renderer.setRenderTarget(this.lensTarget);
+      this.renderer.render(this.sceneScene, this.camera);
+      u.uLensMode.value = 0;
+    }
     this.renderer.setRenderTarget(null);
     this.renderer.render(this.asciiScene, this.camera);
   }
@@ -609,7 +774,10 @@ export class AsciiMorph {
     window.removeEventListener("pointerup", this.onUp);
     window.removeEventListener("pointercancel", this.onUp);
     this.host.removeEventListener("pointerdown", this.onDown);
+    this.host.removeEventListener("pointermove", this.onLensMove);
+    this.host.removeEventListener("pointerleave", this.onLensLeave);
     this.target.dispose();
+    this.lensTarget.dispose();
     this.sceneMat.dispose();
     this.asciiMat.dispose();
     this.geo.dispose();

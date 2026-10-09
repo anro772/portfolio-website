@@ -74,7 +74,7 @@ export function Cursor() {
 
     const setVisible = (v: boolean) => {
       shown = v;
-      ring.style.opacity = v ? "1" : "0";
+      ring.style.opacity = v && ring.dataset.state !== "lens" ? "1" : "0";
       dot.style.opacity = v && ring.dataset.state !== "label" ? "1" : "0";
     };
 
@@ -92,6 +92,16 @@ export function Cursor() {
     const onOver = (e: PointerEvent) => {
       const el = e.target as HTMLElement;
       const t = el.closest<HTMLElement>("[data-cursor]");
+      // over the hero object the decode lens is the cursor: keep only the precise dot
+      if (t?.dataset.cursor === "lens") {
+        ring.dataset.state = "lens";
+        ring.style.opacity = "0";
+        label.textContent = "";
+        dot.style.opacity = shown ? "1" : "0";
+        targetScale = 1;
+        return;
+      }
+      ring.style.opacity = shown ? "1" : "0";
       if (t) {
         const text = LABELS[t.dataset.cursor ?? ""] ?? t.dataset.cursor ?? "";
         label.textContent = text;
