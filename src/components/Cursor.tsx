@@ -6,7 +6,7 @@ import { prefersReducedMotion } from "../lib/motion";
  * Targets with data-cursor="view|open|drag|play" expand the ring into a label; data-cursor-color fills it.
  * Coarse pointers get a tap-positioned label pulse instead.
  */
-const LABELS: Record<string, string> = { view: "View", open: "Open", drag: "Drag", play: "Play", copy: "Copy", pulse: "Pulse", colourise: "Colour", duotone: "Duotone" };
+const LABELS: Record<string, string> = { view: "View", open: "Open", drag: "Drag", play: "Play", copy: "Copy", pulse: "Pulse", colourise: "Colour", duotone: "Duotone", stir: "Stir" };
 
 export function Cursor() {
   const dotRef = useRef<HTMLDivElement>(null);

@@ -6,7 +6,7 @@ import { Cursor } from "./components/Cursor";
 import { Grain } from "./components/Grain";
 import { Hero } from "./sections/Hero";
 import { About } from "./sections/About";
-import { Numbers } from "./sections/Numbers";
+import { ZeroRollbacks } from "./sections/ZeroRollbacks";
 import { Experience } from "./sections/Experience";
 import { Work } from "./sections/Work";
 import { Stack } from "./sections/Stack";
@@ -35,7 +35,7 @@ export function App() {
       <main>
         <Hero ready={ready} />
         <About />
-        <Numbers />
+        <ZeroRollbacks />
         <Experience />
         <Work />
         <Stack />
