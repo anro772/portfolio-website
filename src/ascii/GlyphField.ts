@@ -35,6 +35,20 @@ function field(pattern: Pattern, u: number, v: number, t: number, seed: number):
       const n = Math.sin(Math.floor(u * 14) * 12.9898 + Math.floor(v * 9) * 78.233 + Math.floor(t * 4) * 0.37 + seed) * 43758.5453;
       return (n - Math.floor(n)) * 0.9;
     }
+    case "road": { // night drive: headlights down a road toward the horizon
+      const horizon = -0.25;
+      if (v < horizon) {
+        const n = Math.sin(Math.floor(u * 40) * 12.9898 + Math.floor(v * 30) * 78.233 + seed) * 43758.5453;
+        return n - Math.floor(n) > 0.965 ? 0.3 : 0;
+      }
+      const d = v - horizon;
+      const z = 1 / (d + 0.02);
+      const half = 0.9 * d;
+      const edge = Math.exp(-Math.pow((Math.abs(u) - half) / (0.015 + 0.03 * d), 2)) * 0.75;
+      const dash = Math.abs(u) < 0.012 + 0.03 * d && Math.sin(z * 2.2 - t * 7) > 0.2 ? 0.9 : 0;
+      const beam = Math.exp(-(u * u) / (0.12 * d + 0.002)) * Math.min(1, d * 2.2) * 0.6;
+      return Math.max(edge, dash, Math.abs(u) < half ? beam : beam * 0.15);
+    }
     case "orbit": // gamma ramp, per-monitor
       return 0.5 + 0.5 * Math.sin(a * 3 + r * 6 - t * 1.5) * Math.exp(-Math.abs(r - 0.6) * 3);
   }

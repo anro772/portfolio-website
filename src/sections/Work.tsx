@@ -214,7 +214,7 @@ export function Work() {
         </div>
 
         <div className="mt-24 md:mt-32">
-          <h3 className="mb-8 text-[clamp(1.6rem,2.6vw,2.4rem)] font-medium tracking-[-0.03em]">Tools, automation and mods</h3>
+          <h3 className="mb-8 text-[clamp(1.6rem,2.6vw,2.4rem)] font-medium tracking-[-0.03em]">Games, tools and mods</h3>
           <div className="work-index relative" onPointerLeave={() => show(null)}>
             <ul className="border-t border-line">
               {rest.map((p, i) => (

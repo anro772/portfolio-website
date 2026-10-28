@@ -72,7 +72,7 @@ export type Project = {
   href: string;
   /** seed for the procedural glyph visual */
   seed: number;
-  pattern: "rings" | "wave" | "grid" | "bars" | "orbit" | "noise" | "scan";
+  pattern: "rings" | "wave" | "grid" | "bars" | "orbit" | "noise" | "scan" | "road";
 };
 
 export const projects: Project[] = [
@@ -94,9 +94,20 @@ export const projects: Project[] = [
     blurb:
       "Real-time messaging, group chats, notifications and video calls with screen sharing. ASP.NET Core API with SignalR and JWT, Angular client, MySQL via Entity Framework.",
     tags: ["ASP.NET Core", "SignalR", "Angular"],
-    href: "https://github.com/anro772/REVERB",
+    href: "https://github.com/anro772/REVERB-A-web-instant-communication-application",
     seed: 23,
     pattern: "wave",
+  },
+  {
+    name: "nobody else",
+    kind: "Browser game",
+    year: "2026",
+    blurb:
+      "A first-person night drive down an endless procedural road, rendered with three.js WebGPU and vgpu WGSL shaders, with a synthesized engine and generative radio.",
+    tags: ["three.js", "WebGPU", "WGSL", "Tone.js"],
+    href: "https://github.com/anro772/driving",
+    seed: 89,
+    pattern: "road",
   },
   {
     name: "Replayd",
@@ -104,7 +115,7 @@ export const projects: Project[] = [
     blurb:
       "Instant-replay recorder in C# / .NET 9 with hardware AV1 encoding via ffmpeg, mixed WASAPI audio and an ETW-based FPS overlay.",
     tags: [".NET 9", "ffmpeg", "WASAPI", "ETW"],
-    href: "https://github.com/anro772",
+    href: "https://github.com/anro772/replayd",
     seed: 37,
     pattern: "bars",
   },
@@ -114,7 +125,7 @@ export const projects: Project[] = [
     blurb:
       "Splits long Twitch streams into individual games with computer vision, enriches them from Riot Match-V5 and writes titles and thumbnails through a local LLM.",
     tags: ["Python", "OpenCV", "Local LLM"],
-    href: "https://github.com/anro772",
+    href: "https://github.com/anro772/vod-segmentor",
     seed: 41,
     pattern: "scan",
   },
@@ -124,7 +135,7 @@ export const projects: Project[] = [
     blurb:
       "A League of Legends quiz in React and TypeScript, built on Riot's DataDragon API.",
     tags: ["React", "TypeScript"],
-    href: "https://github.com/anro772",
+    href: "https://github.com/anro772/pathdle",
     seed: 53,
     pattern: "grid",
   },
@@ -134,7 +145,7 @@ export const projects: Project[] = [
     blurb:
       "A UE4SS build for Far Far West (UE 5.7) with hand-extracted AOB signatures, a Lua mod for Abiotic Factor and four C# BepInEx IL2CPP mods for Megabonk.",
     tags: ["UE4SS", "Lua", "BepInEx", "IL2CPP"],
-    href: "https://github.com/anro772",
+    href: "https://github.com/anro772/ue4ss-far-far-west",
     seed: 67,
     pattern: "noise",
   },
@@ -144,7 +155,7 @@ export const projects: Project[] = [
     blurb:
       "Per-monitor colour utility over the AMD Display Library and GDI gamma ramps.",
     tags: ["C#", "ADL", "Win32"],
-    href: "https://github.com/anro772",
+    href: "https://github.com/anro772/luminosity",
     seed: 79,
     pattern: "orbit",
   },
