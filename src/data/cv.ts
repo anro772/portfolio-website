@@ -105,7 +105,7 @@ export const projects: Project[] = [
     blurb:
       "A first-person night drive down an endless procedural road, rendered with three.js WebGPU and vgpu WGSL shaders, with a synthesized engine and generative radio.",
     tags: ["three.js", "WebGPU", "WGSL", "Tone.js"],
-    href: "https://github.com/anro772/driving",
+    href: "https://driving.andreistefan7272.workers.dev/",
     seed: 89,
     pattern: "road",
   },
